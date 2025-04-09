@@ -24,6 +24,6 @@ connectDB();
 
 let port = process.env.PORT || 6969; //Port  === undefined => port = 6969
 
-app.listen(port, () => {
+app.listen(port, '0.0.0.0', () => {
   console.log("Backend Nodejs is running on the port : " + port);
 });
