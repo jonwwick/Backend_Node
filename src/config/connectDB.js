@@ -1,71 +1,114 @@
 // File: ./config/connectDB.js
-import { Sequelize } from 'sequelize'; // Sử dụng import
-import fs from 'fs';
-import path from 'path';
+// Phiên bản sử dụng Cách 1: Lưu nội dung CA cert vào biến môi trường DB_SSL_CA_CONTENT
 
-// Đọc biến môi trường (đã được nạp bởi server.js)
+import { Sequelize } from 'sequelize';
+// Không cần 'fs' hay 'path' để đọc file CA nữa
+
+// --- Đọc biến môi trường ---
+// Đảm bảo các biến này được đặt trong Environment Variables trên Render
 const dbHost = process.env.DB_HOST;
 const dbPort = process.env.DB_PORT;
 const dbUser = process.env.DB_USER;
 const dbPassword = process.env.DB_PASSWORD;
 const dbName = process.env.DB_NAME;
-const dbCaPath = process.env.DB_SSL_CA_PATH || '../Nodejs/src/certs/ca.pem'; // Lấy đường dẫn CA từ .env hoặc dùng mặc định
+// Lấy nội dung CA trực tiếp từ biến môi trường mới
+const dbCaContent = process.env.DB_SSL_CA_CONTENT;
 
-// --- Kiểm tra sự tồn tại của file CA ---
-const resolvedCaPath = path.resolve(dbCaPath); // Lấy đường dẫn tuyệt đối/chuẩn hóa
-if (!fs.existsSync(resolvedCaPath)) {
+// --- Kiểm tra biến môi trường CA ---
+// Rất quan trọng: Phải có nội dung CA để kết nối SSL tới Aiven
+if (!dbCaContent || dbCaContent.trim() === '') {
+    // Ghi lỗi ra console một cách rõ ràng
     console.error(`\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!`);
-    console.error(`!!! LỖI: Không tìm thấy file chứng chỉ SSL CA tại: ${resolvedCaPath}`);
-    console.error(`!!! Vui lòng tải file ca.pem từ Aiven Console và đặt vào đường dẫn trên.`);
-    console.error(`!!! Hoặc cập nhật biến DB_SSL_CA_PATH trong file .env nếu bạn đặt ở nơi khác.`);
+    console.error(`!!! LỖI CẤU HÌNH NGHIÊM TRỌNG: Biến môi trường DB_SSL_CA_CONTENT chưa được đặt hoặc bị trống.`);
+    console.error(`!!! -> Cách sửa trên Render:`);
+    console.error(`!!!    1. Vào Service Node.js -> Environment -> Environment Variables.`);
+    console.error(`!!!    2. Nhấn "Add Environment Variable", chọn Type là "Secret".`);
+    console.error(`!!!    3. Đặt Key là: DB_SSL_CA_CONTENT`);
+    console.error(`!!!    4. Dán TOÀN BỘ nội dung file ca.pem (từ -----BEGIN... đến ...END CERTIFICATE-----) vào ô Value.`);
+    console.error(`!!!    5. Nhấn "Save Changes" và trigger deploy lại nếu cần.`);
     console.error(`!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n`);
-    process.exit(1); // Thoát ứng dụng vì không thể kết nối DB nếu thiếu CA cert
+    // Dừng ứng dụng ngay lập tức vì không thể kết nối DB nếu thiếu cấu hình SSL
+    process.exit(1);
 }
-// --- Kết thúc kiểm tra file CA ---
+// --- Kết thúc kiểm tra ---
 
-// Khởi tạo instance Sequelize với cấu hình cho Aiven
-const sequelize = new Sequelize(dbName, dbUser, dbPassword, {
-    host: dbHost,
-    port: dbPort, // Thêm port vào đây
-    dialect: 'mysql',
-    logging: false, // Đặt thành console.log nếu muốn xem các câu lệnh SQL được Sequelize tạo ra
-    dialectOptions: {
-        // Cấu hình SSL bắt buộc cho Aiven
-        ssl: {
-            require: true, // Bắt buộc sử dụng SSL
-            ca: fs.readFileSync(resolvedCaPath) // Đọc nội dung file CA
-            // rejectUnauthorized: true // Mặc định là true khi có 'ca', đảm bảo chứng chỉ hợp lệ.
-                                      // Chỉ đặt thành false khi thử nghiệm và gặp lỗi verify, nhưng rất không khuyến khích cho production.
-        }
-    },
-    pool: { // Cấu hình connection pool (tùy chọn, Sequelize có mặc định khá tốt)
-       max: 5,  // Số kết nối tối đa
-       min: 0,   // Số kết nối tối thiểu
-       acquire: 30000, // Thời gian tối đa (ms) để cố gắng lấy kết nối trước khi báo lỗi
-       idle: 10000     // Thời gian tối đa (ms) một kết nối có thể nhàn rỗi trước khi bị giải phóng
-     }
-});
+// --- Khởi tạo instance Sequelize ---
+let sequelize; // Khai báo ở ngoài để export
+try {
+  sequelize = new Sequelize(dbName, dbUser, dbPassword, {
+      host: dbHost,
+      port: dbPort, // Đảm bảo DB_PORT được cung cấp
+      dialect: 'mysql',
+      logging: false, // Đặt thành console.log để xem SQL queries khi cần debug trên Render
+      dialectOptions: {
+          // Cấu hình SSL bắt buộc cho Aiven
+          ssl: {
+              require: true, // Bắt buộc sử dụng SSL
+              // Sử dụng trực tiếp nội dung CA từ biến môi trường
+              ca: dbCaContent
+              // rejectUnauthorized: true // Mặc định là true khi 'ca' được cung cấp. Giữ nguyên để bảo mật.
+          }
+      },
+      pool: { // Cấu hình connection pool
+         max: 5,      // Số kết nối tối đa Render thường giới hạn plan miễn phí/rẻ
+         min: 0,      // Số kết nối tối thiểu
+         acquire: 30000, // Timeout khi lấy connection (ms)
+         idle: 10000    // Timeout connection nhàn rỗi (ms)
+       },
+      // Nên đặt timezone để đảm bảo tính nhất quán về thời gian
+      timezone: '+07:00' // Ví dụ: giờ Việt Nam
+  });
+  console.log("Sequelize instance configured successfully."); // Thêm log khởi tạo thành công
+} catch (error) {
+    // Bắt lỗi ngay tại lúc khởi tạo Sequelize nếu có vấn đề nghiêm trọng
+    // Ví dụ: Thiếu biến môi trường cơ bản (DB_HOST, DB_USER...), lỗi thư viện nội bộ
+     console.error(`\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!`);
+     console.error(`!!! LỖI KHỞI TẠO SEQUELIZE: Không thể tạo instance Sequelize.`);
+     console.error(`!!! -> Kiểm tra kỹ các biến môi trường DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME đã được đặt trên Render chưa.`);
+     console.error(`!!! Chi tiết lỗi: ${error.message}`);
+     console.error(`!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n`);
+     process.exit(1); // Dừng ứng dụng nếu không khởi tạo được Sequelize
+}
+// --- Kết thúc Khởi tạo instance Sequelize ---
 
-// Hàm connectDB để kiểm tra kết nối ban đầu (được gọi từ server.js)
+
+// --- Hàm kiểm tra kết nối ban đầu ---
+// Hàm này được gọi từ server.js để đảm bảo kết nối hoạt động lúc khởi động
 const connectDB = async () => {
+    // Kiểm tra lại sequelize instance phòng trường hợp lỗi không mong muốn
+    if (!sequelize) {
+         console.error("!!! LỖI connectDB: Sequelize instance không tồn tại. Không thể kiểm tra kết nối.");
+         return; // Thoát hàm kiểm tra
+    }
     try {
-        await sequelize.authenticate(); // Sử dụng instance sequelize đã cấu hình ở trên
-        console.log(`=> Sequelize connected successfully to Aiven database: ${dbName} on host ${dbHost}`);
+        await sequelize.authenticate(); // Thử kết nối và xác thực
+        console.log(`=> OK! Sequelize ĐÃ KẾT NỐI thành công tới database Aiven: "${dbName}" (Host: ${dbHost})`);
     } catch (error) {
+        // Log lỗi kết nối chi tiết để dễ debug trên Render Logs
         console.error(`\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!`);
-        console.error(`!!! LỖI Sequelize: Không thể kết nối tới database Aiven (${dbName})`);
-        console.error(`!!! Kiểm tra lại thông tin trong file .env (Host, Port, User, Password, DB Name).`);
-        console.error(`!!! Đảm bảo đường dẫn DB_SSL_CA_PATH (${resolvedCaPath}) chính xác và file ca.pem hợp lệ.`);
-        console.error(`!!! Kiểm tra kết nối mạng và cài đặt firewall (nếu có).`);
-        console.error(`!!! Chi tiết lỗi: ${error.message}`); // In lỗi cụ thể
+        console.error(`!!! LỖI KẾT NỐI SEQUELIZE: Không thể authenticate tới database Aiven (${dbName})`);
+        console.error(`!!! -> KIỂM TRA LẠI CÁC YẾU TỐ SAU:`);
+        console.error(`!!!    1. Giá trị các biến môi trường trên Render: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME.`);
+        console.error(`!!!    2. Nội dung biến môi trường DB_SSL_CA_CONTENT có đúng là toàn bộ nội dung file ca.pem không?`);
+        console.error(`!!!    3. Firewall trên Aiven Console (service MySQL -> Firewall) đã cho phép IP của Render chưa? (Thường không cần nếu Render dùng IP động, nhưng nên kiểm tra).`);
+        console.error(`!!!    4. Trạng thái dịch vụ database trên Aiven Console có đang "Running" không?`);
+        console.error(`!!! Chi tiết lỗi Sequelize: ${error.name}`);
+        // In lỗi gốc nếu có (thường chứa thông tin cụ thể hơn về lỗi mạng, access denied, v.v.)
+        if (error.original) {
+             console.error(`!!! Lỗi gốc (Original Error): ${error.original}`); // Quan trọng để biết lý do Access Denied, Timeout,...
+        } else {
+             console.error(`!!! Chi tiết lỗi đầy đủ: ${error}`);
+        }
         console.error(`!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n`);
-        // Cân nhắc việc thoát ứng dụng nếu kết nối ban đầu thất bại
-        // process.exit(1);
+        // Không nên process.exit(1) ở đây để server có thể vẫn chạy và thử lại hoặc báo lỗi API
     }
 };
+// --- Kết thúc Hàm kiểm tra kết nối ban đầu ---
 
-// QUAN TRỌNG: Export instance 'sequelize' để các file model có thể sử dụng
+// QUAN TRỌNG: Export instance 'sequelize' đã được cấu hình
+// Các file models sẽ import instance này để định nghĩa model.
 export { sequelize };
 
-// Export hàm connectDB (default) để server.js gọi
+// Export hàm connectDB (dưới dạng default)
+// server.js sẽ import và gọi hàm này lúc khởi động để kiểm tra kết nối.
 export default connectDB;
