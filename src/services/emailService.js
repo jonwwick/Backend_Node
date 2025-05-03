@@ -96,7 +96,7 @@ let sendAttachment = async (dataSend) => {
 
       // send mail with defined transport object
       let info = await transporter.sendMail({
-        from: '"HuyHuy 👻" <gunnyml123@gmail.com>', // sender address
+        from: '"TuanTuan" <tuandtuan4@gmail.com>', // sender address
         to: dataSend.email, // list of receivers
         subject: "Kết quả đặt lịch khám bệnh", // Subject line
         html: getBodyHTMLEmailRemedy(dataSend),
